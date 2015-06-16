@@ -2,7 +2,7 @@
 // @name [SteamDB] Monster Minigame Script
 // @namespace https://github.com/SteamDatabase/steamSummerMinigame
 // @description A script that runs the Steam Monster Minigame for you.
-// @version 4.4.5
+// @version 4.4.8
 // @match *://steamcommunity.com/minigame/towerattack*
 // @match *://steamcommunity.com//minigame/towerattack*
 // @grant none
@@ -18,12 +18,14 @@
 // OPTIONS
 var clickRate = 20;
 var logLevel = 1; // 5 is the most verbose, 0 disables all log
-var minsLeft = 30; // Minutes left before daily reset
+
+var nukeBeforeReset = getPreferenceBoolean("nukeBeforeReset", true);
 
 var enableAutoClicker = getPreferenceBoolean("enableAutoClicker", true);
 
-var enableAutoUpgradeDPS = getPreferenceBoolean("enableAutoUpgradeDPS", false);
+var enableAutoUpgradeHP = getPreferenceBoolean("enableAutoUpgradeHP", true);
 var enableAutoUpgradeClick = getPreferenceBoolean("enableAutoUpgradeClick", false);
+var enableAutoUpgradeDPS = getPreferenceBoolean("enableAutoUpgradeDPS", false);
 
 var removeInterface = getPreferenceBoolean("removeInterface", true); // get rid of a bunch of pointless DOM
 var removeParticles = getPreferenceBoolean("removeParticles", true);
@@ -225,8 +227,8 @@ function firstRun() {
 	var titleActivity = document.querySelector( '.title_activity' );
 	var playersInGame = document.createElement( 'span' );
 	playersInGame.innerHTML = '<span id=\"players_in_game\">0/1500</span>&nbsp;Players in room<br>';
-
 	titleActivity.insertBefore(playersInGame, titleActivity.firstChild);
+	ELEMENTS.PlayersInGame = document.getElementById("players_in_game");
 
 	// Fix alignment of acvititylog and expand list of active abilities on hover
 	var abilities_extra_styles = document.createElement('style');
@@ -236,6 +238,7 @@ function firstRun() {
 
 	// space for option menu
 	var options_menu = document.querySelector(".game_options");
+	options_menu.style.height = "";
 	var sfx_btn = document.querySelector(".toggle_sfx_btn");
 	sfx_btn.style.marginLeft = "2px";
 	sfx_btn.style.marginRight = "7px";
@@ -249,8 +252,7 @@ function firstRun() {
 	leave_btn.style.display = "none";
 
 	var info_box = document.querySelector(".leave_game_helper");
-	var pagecontent = document.querySelector(".pagecontent");
-	pagecontent.style.padding = "0";
+	document.querySelector(".pagecontent").style.padding = "0";
 	options_menu.insertBefore(info_box, sfx_btn);
 
 	info_box.innerHTML = '<b>OPTIONS</b>' + ((typeof GM_info !==  "undefined") ? ' (v' + GM_info.script.version + ')' : '') + '<br>Settings marked with a <span style="color:#FF5252;font-size:22px;line-height:4px;vertical-align:bottom;">*</span> requires a refresh to take effect.<hr>';
@@ -275,8 +277,9 @@ function firstRun() {
 	options1.style.float = "left";
 
 	options1.appendChild(makeCheckBox("enableAutoClicker", "Enable autoclicker", enableAutoClicker, toggleAutoClicker, false));
-	options1.appendChild(makeCheckBox("enableAutoUpgradeDPS", "Enable AutoUpgrade DPS", enableAutoUpgradeDPS, toggleAutoUpgradeDPS, false));
+	options1.appendChild(makeCheckBox("enableAutoUpgradeHP", "Enable AutoUpgrade HP (up to 300k HP)", enableAutoUpgradeHP, toggleAutoUpgradeHP, false));
 	options1.appendChild(makeCheckBox("enableAutoUpgradeClick", "Enable AutoUpgrade Clicks", enableAutoUpgradeClick, toggleAutoUpgradeClick, false));
+	options1.appendChild(makeCheckBox("enableAutoUpgradeDPS", "Enable AutoUpgrade DPS", enableAutoUpgradeDPS, toggleAutoUpgradeDPS, false));
 	options1.appendChild(makeCheckBox("removeInterface", "Remove interface", removeInterface, handleEvent, true));
 	options1.appendChild(makeCheckBox("removeParticles", "Remove particle effects", removeParticles, handleEvent, true));
 	options1.appendChild(makeCheckBox("removeFlinching", "Remove flinching effects", removeFlinching, handleEvent, true));
@@ -298,7 +301,7 @@ function firstRun() {
 	}
 
 	options2.appendChild(makeCheckBox("enableFingering", "Enable targeting pointer", enableFingering, handleEvent,true));
-	options2.appendChild(makeNumber("setMinsLeft", "Spam abilities before this many minutes to end of the game", "45px", minsLeft, 5, 59, updateEndGameCrazy));
+	options2.appendChild(makeCheckBox("nukeBeforeReset", "Spam abilities 1 hour before game end", nukeBeforeReset, handleEvent, true));
 	options2.appendChild(makeNumber("setLogLevel", "Change the log level (you shouldn't need to touch this)", "25px", logLevel, 0, 5, updateLogLevel));
 
 	info_box.appendChild(options2);
@@ -341,7 +344,7 @@ function isNearEndGame() {
 	var cHours = cTime.getUTCHours();
 	var cMins = cTime.getUTCMinutes();
 	var timeLeft = 60 - cMins;
-	if (cHours == 15 && timeLeft <= minsLeft) {
+	if (cHours == 15 && timeLeft <= 60) {
 		return true;
 	}
 	else {
@@ -452,54 +455,78 @@ function MainLoop() {
 	}
 }
 
+var autoupgrade_update_hilight = true;
+
 function useAutoUpgrade() {
-	if(!enableAutoUpgradeDPS && !enableAutoUpgradeClick) { return; }
+	if(!enableAutoUpgradeDPS && !enableAutoUpgradeClick && !enableAutoUpgradeHP) { return; }
 
-	// upg_map will contain the most cost effctive upgrades for each type
-	var upg_map = {
-		0: {
-			idx: -1,
-			gold_per_mult: 0
-		},
-		1: {
-			idx: -1,
-			gold_per_mult: 0
-		},
-		2: {
-			idx: -1,
-			gold_per_mult: 0
-		},
-	};
+	var upg_order = [
+		UPGRADES.ARMOR_PIERCING_ROUND,
+		UPGRADES.LIGHT_ARMOR,
+		UPGRADES.AUTO_FIRE_CANNON,
+	];
+	var upg_map = {};
 
-	var p_upg = s().m_rgPlayerUpgrades;
+	upg_order.forEach(function(i) { upg_map[i] = {}; });
+	var pData = s().m_rgPlayerData;
+	var cache = s().m_UI.m_rgElementCache;
+	var upg_enabled = [
+		enableAutoUpgradeClick,
+		enableAutoUpgradeHP && pData.hp < 300000,
+		enableAutoUpgradeDPS,
+	];
 
 	// loop over all upgrades and find the most cost effective ones
 	s().m_rgTuningData.upgrades.forEach(function(upg, idx) {
-		if(upg.type in upg_map) {
+		if(upg_map.hasOwnProperty(upg.type)) {
 
 			var cost = s().GetUpgradeCost(idx) / parseFloat(upg.multiplier);
 
-			if(upg_map[upg.type].idx == -1 || upg_map[upg.type].cost_per_mult > cost) {
+			if(!upg_map[upg.type].hasOwnProperty('idx') || upg_map[upg.type].cost_per_mult > cost) {
 				if(upg.hasOwnProperty('required_upgrade') && s().GetUpgradeLevel(upg.required_upgrade) < upg.required_upgrade_level) { return; }
 
-				upg_map[upg.type].idx = idx;
-				upg_map[upg.type].cost_per_mult = cost;
+				upg_map[upg.type] = {
+					'idx': idx,
+					'cost_per_mult': cost,
+				};
 			}
 		}
 	});
 
-	var key = '';
-	var cache = s().m_UI.m_rgElementCache;
+	// do hilighting if needed
+	if(autoupgrade_update_hilight) {
+		autoupgrade_update_hilight = false;
 
-	if(enableAutoUpgradeDPS) {
-		key = 'upgr_' + upg_map[UPGRADES.AUTO_FIRE_CANNON].idx;
-		if(cache.hasOwnProperty(key)) { s().TryUpgrade(cache[key].find('.link')[0]); }
+		// clear all currently hilighted
+		[].forEach.call(document.querySelectorAll('[id^="upgr_"] .info'),
+				function(elm) { elm.style.color = ''; });
+
+		// hilight targets
+		[].forEach.call(document.querySelectorAll(Object.keys(upg_map).map(function(i) {
+				return "#upgr_" + upg_map[i].idx + " .info";
+			})
+			.join(",")),
+		function(elm) { elm.style.setProperty('color', '#E1B21E', 'important'); });
 	}
 
-	if(enableAutoUpgradeClick) {
-		key = 'upgr_' + upg_map[UPGRADES.ARMOR_PIERCING_ROUND].idx;
-		if(cache.hasOwnProperty(key)) { s().TryUpgrade(cache[key].find('.link')[0]); }
+	// do upgrading
+	for(var i = 0; i < upg_order.length; i++ ) {
+		if(!upg_enabled[i]) { continue; }
+
+		// prioritize click upgrades over DPS ones, unless they are more cost effective
+		if(upg_order[i] === UPGRADES.AUTO_FIRE_CANNON && enableAutoUpgradeClick) {
+			if(upg_map[UPGRADES.AUTO_FIRE_CANNON].cost_per_mult >= upg_map[UPGRADES.ARMOR_PIERCING_ROUND].cost_per_mult / 10) { continue; }
+		}
+
+		var tree = upg_map[upg_order[i]];
+		var key = 'upgr_' + tree.idx;
+
+		if(s().GetUpgradeCost(tree.idx) < pData.gold && cache.hasOwnProperty(key)) {
+			s().TryUpgrade(cache[key].find('.link')[0]);
+			autoupgrade_update_hilight = true;
+		}
 	}
+
 }
 
 function toggleAutoUpgradeDPS(event) {
@@ -520,6 +547,16 @@ function toggleAutoUpgradeClick(event) {
 	}
 
 	enableAutoUpgradeClick = value;
+}
+
+function toggleAutoUpgradeHP(event) {
+	var value = enableAutoUpgradeHP;
+
+	if(event !== undefined) {
+		value = handleCheckBox(event);
+	}
+
+	enableAutoUpgradeHP = value;
 }
 
 function refreshPlayerData() {
@@ -732,12 +769,6 @@ function toggleAllText(event) {
 	}
 }
 
-function updateEndGameCrazy(event) {
-	if(event !== undefined) {
-		minsLeft = event.target.value;
-	}
-}
-
 function updateLogLevel(event) {
 	if(event !== undefined) {
 		logLevel = event.target.value;
@@ -871,10 +902,12 @@ function displayText(x, y, strText, color) {
 }
 
 function updatePlayersInGame() {
-	var totalPlayers =  s().m_rgLaneData[ 0 ].players +
-	s().m_rgLaneData[ 1 ].players +
-	s().m_rgLaneData[ 2 ].players;
-	document.getElementById("players_in_game").innerHTML = totalPlayers + "/1500";
+	var laneData = s().m_rgLaneData;
+	var totalPlayers =
+		laneData[ 0 ].players +
+		laneData[ 1 ].players +
+		laneData[ 2 ].players;
+	ELEMENTS.PlayersInGame.textContent = totalPlayers + "/1500";
 }
 
 function goToLaneWithBestTarget(level) {
@@ -1243,16 +1276,19 @@ function useAbilities(level)
 
 	// Gold Rain
 	if (canUseAbility(ABILITIES.RAINING_GOLD)) {
+		// only use if the speed threshold has not been reached,
+		// or it's a designated gold round after the threshold
+		if (level < CONTROL.speedThreshold || level % CONTROL.rainingRounds === 0) {
+			enemy = s().GetEnemy(s().m_rgPlayerData.current_lane, s().m_rgPlayerData.target);
+			// check if current target is a boss, otherwise its not worth using the gold rain
+			if (enemy && enemy.m_data.type == ENEMY_TYPE.BOSS) {
+				enemyBossHealthPercent = enemy.m_flDisplayedHP / enemy.m_data.max_hp;
 	
-		enemy = s().GetEnemy(s().m_rgPlayerData.current_lane, s().m_rgPlayerData.target);
-		// check if current target is a boss, otherwise its not worth using the gold rain
-		if (enemy && enemy.m_data.type == ENEMY_TYPE.BOSS) {
-			enemyBossHealthPercent = enemy.m_flDisplayedHP / enemy.m_data.max_hp;
-
-			if (enemyBossHealthPercent >= 0.6) { // We want sufficient time for the gold rain to be applicable
-				// Gold Rain is purchased, cooled down, and needed. Trigger it.
-				advLog('Gold rain is purchased and cooled down, Triggering it on boss', 2);
-				triggerAbility(ABILITIES.RAINING_GOLD);
+				if (enemyBossHealthPercent >= 0.6) { // We want sufficient time for the gold rain to be applicable
+					// Gold Rain is purchased, cooled down, and needed. Trigger it.
+					advLog('Gold rain is purchased and cooled down, Triggering it on boss', 2);
+					triggerAbility(ABILITIES.RAINING_GOLD);
+				}
 			}
 		}
 	}
@@ -1306,14 +1342,14 @@ function useAbilities(level)
 	}
 
 	// Wormhole
-	if (isNearEndGame()) {
+	if (isNearEndGame() && nukeBeforeReset) {
 
 		// Check if Wormhole is purchased
 		if (tryUsingAbility(ABILITIES.WORMHOLE, true)) {
-			advLog('Less than ' + minsLeft + ' minutes for game to end. Triggering wormholes...', 2);
+			advLog('Less than 60 minutes for game to end. Triggering wormholes...', 2);
 		}
 		else if (tryUsingAbility(ABILITIES.THROW_MONEY_AT_SCREEN)) {
-			advLog('Less than ' + minsLeft + ' minutes for game to end. Throwing money at screen for no particular reason...', 2);
+			advLog('Less than 60 minutes for game to end. Throwing money at screen for no particular reason...', 2);
 		}
 	}
 

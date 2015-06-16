@@ -753,23 +753,7 @@ function lockElements() {
 		s().m_rgPlayerTechTree.damage_multiplier_earth
 	];
 
-	var hashCode = function(str) {
-		var t = 0,
-			i, ch;
-		if (0 === str.length) {
-			return t;
-		}
-
-		for (i = 0; i < str.length; i++) {
-			ch = str.charCodeAt(i);
-			t = (t << 5) - t + ch;
-			t &= t;
-		}
-
-		return t;
-	};
-
-	var elem = Math.abs(hashCode(w.g_steamID) % 4);
+	var elem = (parseInt(w.g_steamID.slice(-2)) + (parseInt(w.g_Minigame.gameid) % 100)) % 4;
 
 	// If more than two elements are leveled to 3 or higher, do not enable lock
 	var leveled = 0;

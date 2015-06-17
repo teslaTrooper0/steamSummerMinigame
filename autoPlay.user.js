@@ -1250,7 +1250,7 @@
 	function useWormholeIfRelevant() {
 		// Check the time before using wormhole.
 		var level = getGameLevel();
-		if (level < control.speedThreshold || level % control.rainingRounds !== 0) {
+		if (level % 500 > 301 || level % 100 !== 0) {
 			return;
 		}
 		// Check if Wormhole is purchased
